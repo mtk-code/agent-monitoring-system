@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timezone 
 from datetime import timedelta
@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "devices.db"
+EXPECTED_TOKEN = "dev-token-123"
 
 app = FastAPI(title="Agent Monitoring Server")
 
@@ -43,7 +44,11 @@ def startup():
 
 
 @app.post("/ingest")
-def ingest(payload: AgentPayload):
+@app.post("/ingest")
+def ingest(payload: AgentPayload, x_auth_token: str = Header(default="")):
+    if x_auth_token != EXPECTED_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     now = datetime.now(timezone.utc).isoformat()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()

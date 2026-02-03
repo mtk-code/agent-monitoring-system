@@ -22,8 +22,7 @@ def collect_metrics():
         "cpu": psutil.cpu_percent(interval=1),
         "ram": psutil.virtual_memory().percent,
         "disk": psutil.disk_usage("/").percent,
-        "uptime_sec": int(time.time() - psutil.boot_time()),
-
+        "uptime_sec": int(time.time()),
     }
 
 
@@ -38,8 +37,10 @@ def main():
         payload["device_id"] = cfg["device_id"]
 
         try:
-            r = requests.post(cfg["server_url"], json=payload, timeout=5)
+            headers = {"X-Auth-Token": cfg.get("auth_token", "")}
+            r = requests.post(cfg["server_url"], json=payload, headers=headers, timeout=5)
             print("[agent] sent", r.status_code)
+
         except Exception as e:
             print("[agent] ERROR sending payload:", repr(e))
 
