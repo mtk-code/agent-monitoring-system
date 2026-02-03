@@ -50,74 +50,101 @@ class CommandAck(BaseModel):
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
+
+    # devices table (ensure org_id column exists)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS devices (
             device_id TEXT PRIMARY KEY,
             hostname TEXT,
             last_seen TEXT,
-            last_payload_json TEXT
+            last_payload_json TEXT,
+            org_id INTEGER
         )
         """
     )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS commands (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            command TEXT,
-            args_json TEXT,
-            status TEXT,
-            created_at TEXT,
-            ack_at TEXT,
-            result_json TEXT
-        )
-        """
-    )
-    # organizations and users
+
+    # organizations table
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS organizations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            api_token TEXT
+            name TEXT UNIQUE,
+            api_token TEXT UNIQUE,
+            created_at TEXT
         )
         """
     )
+
+    # users table
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE,
             password_hash TEXT,
-            org_id INTEGER
+            org_id INTEGER,
+            is_admin INTEGER DEFAULT 0,
+            created_at TEXT
         )
         """
     )
 
-    # add org_id column to devices and commands if missing
-    def column_exists(table, column):
+    # commands table
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT,
+            org_id INTEGER,
+            command TEXT,
+            args_json TEXT,
+            status TEXT,
+            created_at TEXT,
+            acked_at TEXT,
+            result_json TEXT
+        )
+        """
+    )
+
+    # helper to add missing columns
+    def ensure_column(table, column, definition):
         cur.execute(f"PRAGMA table_info({table})")
         cols = [r[1] for r in cur.fetchall()]
-        return column in cols
+        if column not in cols:
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            except Exception:
+                pass
 
-    if not column_exists('devices', 'org_id'):
-        cur.execute("ALTER TABLE devices ADD COLUMN org_id INTEGER")
-    if not column_exists('commands', 'org_id'):
-        cur.execute("ALTER TABLE commands ADD COLUMN org_id INTEGER")
+    ensure_column('devices', 'org_id', 'INTEGER')
+    ensure_column('users', 'org_id', 'INTEGER')
+    ensure_column('users', 'is_admin', 'INTEGER DEFAULT 0')
+    ensure_column('users', 'created_at', 'TEXT')
+    ensure_column('commands', 'org_id', 'INTEGER')
+    ensure_column('commands', 'acked_at', 'TEXT')
+    ensure_column('commands', 'result_json', 'TEXT')
 
-    # ensure a default organization exists with EXPECTED_TOKEN
-    cur.execute("SELECT id FROM organizations WHERE api_token = ?", (EXPECTED_TOKEN,))
+    # seed default org and admin if no orgs exist
+    cur.execute("SELECT COUNT(1) FROM organizations")
     row = cur.fetchone()
-    if not row:
-        cur.execute("INSERT INTO organizations (name, api_token) VALUES (?, ?)", ("default", EXPECTED_TOKEN))
+    org_count = row[0] if row else 0
+    if org_count == 0:
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(
+            "INSERT INTO organizations (name, api_token, created_at) VALUES (?, ?, ?)",
+            ("default", EXPECTED_TOKEN, now),
+        )
         org_id = cur.lastrowid
-        # create a default admin user
         default_pw = pwd_context.hash("admin")
         try:
-            cur.execute("INSERT INTO users (email, password_hash, org_id) VALUES (?, ?, ?)", ("admin@local", default_pw, org_id))
+            cur.execute(
+                "INSERT OR IGNORE INTO users (email, password_hash, org_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("admin@local", default_pw, org_id, 1, now),
+            )
         except Exception:
             pass
+
     con.commit()
     con.close()
 
@@ -242,7 +269,7 @@ def ack_command(device_id: str, command_id: int, payload: CommandAck, x_auth_tok
 
     cur.execute(
         """
-        UPDATE commands SET status = 'acked', ack_at = ?, result_json = ?
+        UPDATE commands SET status = 'acked', acked_at = ?, result_json = ?
         WHERE id = ? AND device_id = ? AND org_id = ?
         """,
         (now, result_json, command_id, device_id, org_id),
@@ -254,7 +281,7 @@ def ack_command(device_id: str, command_id: int, payload: CommandAck, x_auth_tok
     if changed == 0:
         raise HTTPException(status_code=404, detail="command not found")
 
-    return {"ok": True, "ack_at": now}
+    return {"ok": True, "acked_at": now}
 
 
 @app.get("/devices")
@@ -380,6 +407,81 @@ def get_user_from_token(token: str):
     if not row:
         return None
     return {'id': row[0], 'email': row[1], 'org_id': row[2]}
+
+
+def get_org_by_id(org_id: int):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('SELECT id, name, api_token, created_at FROM organizations WHERE id = ?', (org_id,))
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return None
+    return {'id': row[0], 'name': row[1], 'api_token': row[2], 'created_at': row[3]}
+
+
+@app.get('/org')
+def org_info(request: Request):
+    user = require_user_or_redirect(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    org = get_org_by_id(user['org_id'])
+    if not org:
+        raise HTTPException(status_code=404, detail='org not found')
+
+    # fetch users
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('SELECT id, email FROM users WHERE org_id = ?', (org['id'],))
+    users = [{'id': r[0], 'email': r[1]} for r in cur.fetchall()]
+    con.close()
+
+    return {'org': org, 'users': users}
+
+
+@app.post('/org/token/rotate')
+def org_rotate_token(request: Request):
+    user = require_user_or_redirect(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    # generate new token
+    import secrets
+    new_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc).isoformat()
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('UPDATE organizations SET api_token = ?, created_at = ? WHERE id = ?', (new_token, now, user['org_id']))
+    con.commit()
+    con.close()
+
+    return {'ok': True, 'api_token': new_token}
+
+
+@app.post('/org/users')
+def org_create_user(body: dict, request: Request):
+    user = require_user_or_redirect(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+    email = body.get('email')
+    password = body.get('password')
+    if not email or not password:
+        raise HTTPException(status_code=400, detail='missing email or password')
+
+    pw_hash = pwd_context.hash(password)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    try:
+        cur.execute('INSERT INTO users (email, password_hash, org_id) VALUES (?, ?, ?)', (email, pw_hash, user['org_id']))
+        con.commit()
+        uid = cur.lastrowid
+    except sqlite3.IntegrityError:
+        con.close()
+        raise HTTPException(status_code=400, detail='user exists')
+    con.close()
+    return {'ok': True, 'id': uid, 'email': email}
 
 
 def require_user_or_redirect(request: Request):

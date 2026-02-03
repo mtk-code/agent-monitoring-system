@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Organization - Agent Monitoring</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1>Organization</h1>
+        <div>
+          <a href="/ui" class="btn btn-sm btn-secondary">Back</a>
+        </div>
+      </div>
+
+      <div id="orgInfo" class="mb-3">
+        <h4 id="orgName"></h4>
+        <div>Token: <code id="orgToken"></code> <button id="rotateBtn" class="btn btn-sm btn-outline-warning ms-2">Rotate</button></div>
+      </div>
+
+      <div>
+        <h5>Users</h5>
+        <table class="table table-sm"><thead><tr><th>Email</th></tr></thead><tbody id="usersT"></tbody></table>
+        <form id="createUserForm" class="row g-2">
+          <div class="col-5"><input id="newEmail" class="form-control" placeholder="email" required></div>
+          <div class="col-5"><input id="newPass" class="form-control" placeholder="password" required></div>
+          <div class="col-2"><button class="btn btn-primary w-100">Add</button></div>
+        </form>
+      </div>
+
+    </div>
+
+    <script>
+      async function load() {
+        const res = await fetch('/org');
+        if (!res.ok) { window.location.href = '/login'; return; }
+        const j = await res.json();
+        document.getElementById('orgName').innerText = j.org.name;
+        document.getElementById('orgToken').innerText = j.org.api_token;
+        const tbody = document.getElementById('usersT'); tbody.innerHTML = '';
+        j.users.forEach(u => { const tr = document.createElement('tr'); tr.innerHTML = `<td>${u.email}</td>`; tbody.appendChild(tr); });
+      }
+
+      document.getElementById('rotateBtn').addEventListener('click', async () => {
+        if (!confirm('Rotate organization token? This will invalidate agent tokens.')) return;
+        const res = await fetch('/org/token/rotate', { method: 'POST' });
+        if (res.ok) { const j = await res.json(); document.getElementById('orgToken').innerText = j.api_token; alert('Rotated'); }
+        else alert('Failed');
+      });
+
+      document.getElementById('createUserForm').addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const email = document.getElementById('newEmail').value;
+        const password = document.getElementById('newPass').value;
+        const res = await fetch('/org/users', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email,password}) });
+        if (res.ok) { await load(); document.getElementById('newEmail').value=''; document.getElementById('newPass').value=''; }
+        else { const j = await res.json(); alert(j.detail || 'error'); }
+      });
+
+      load();
+    </script>
+  </body>
+</html>
