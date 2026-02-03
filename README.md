@@ -41,6 +41,16 @@ The UI shows devices and allows sending a "restart" command per device (uses the
 
 ---
 
+## Auth
+
+The server supports user login via JWT for the web UI. There's also an organization API token used by agents to `POST /ingest`.
+
+- Default admin user: `admin@local` / password `admin` (created automatically for the default org).
+- To login, visit: `http://127.0.0.1:8000/login` and sign in. A JWT is stored in a cookie.
+- Agents continue to use the `X-Auth-Token` header with the organization's API token to authenticate and report metrics.
+
+---
+
 ## Run Agent Locally
 
 ```bash
