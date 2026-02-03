@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 
 DB_PATH = Path(__file__).parent / "devices.db"
 EXPECTED_TOKEN = os.getenv("EXPECTED_TOKEN", "dev-token-123")
@@ -26,6 +27,16 @@ class AgentPayload(BaseModel):
     uptime_sec: int
 
 
+class CommandCreate(BaseModel):
+    command: str
+    args: Optional[dict] = None
+
+
+class CommandAck(BaseModel):
+    success: bool
+    message: Optional[str] = ""
+
+
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
@@ -36,6 +47,20 @@ def init_db():
             hostname TEXT,
             last_seen TEXT,
             last_payload_json TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT,
+            command TEXT,
+            args_json TEXT,
+            status TEXT,
+            created_at TEXT,
+            ack_at TEXT,
+            result_json TEXT
         )
         """
     )
@@ -77,6 +102,87 @@ def ingest(payload: AgentPayload, x_auth_token: str = Header(default="")):
     con.close()
 
     return {"ok": True, "ts_utc": now}
+
+
+@app.post("/devices/{device_id}/commands")
+def enqueue_command(device_id: str, payload: CommandCreate, x_auth_token: str = Header(default="")):
+    if x_auth_token != EXPECTED_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    now = datetime.now(timezone.utc).isoformat()
+    args_json = json.dumps(payload.args or {})
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO commands (device_id, command, args_json, status, created_at)
+        VALUES (?, ?, ?, 'pending', ?)
+        """,
+        (device_id, payload.command, args_json, now),
+    )
+    cmd_id = cur.lastrowid
+    con.commit()
+    con.close()
+
+    return {"ok": True, "id": cmd_id, "created_at": now}
+
+
+@app.get("/devices/{device_id}/commands/next")
+def get_next_command(device_id: str, x_auth_token: str = Header(default="")):
+    if x_auth_token != EXPECTED_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT id, command, args_json, created_at FROM commands
+        WHERE device_id = ? AND status = 'pending'
+        ORDER BY id ASC LIMIT 1
+        """,
+        (device_id,)
+    )
+    row = cur.fetchone()
+    con.close()
+
+    if not row:
+        return None
+
+    cmd_id, command, args_json, created_at = row
+    try:
+        args = json.loads(args_json) if args_json else {}
+    except Exception:
+        args = {}
+
+    return {"id": cmd_id, "command": command, "args": args, "created_at": created_at}
+
+
+@app.post("/devices/{device_id}/commands/{command_id}/ack")
+def ack_command(device_id: str, command_id: int, payload: CommandAck, x_auth_token: str = Header(default="")):
+    if x_auth_token != EXPECTED_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    now = datetime.now(timezone.utc).isoformat()
+    result_json = json.dumps({"success": payload.success, "message": payload.message or ""})
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        """
+        UPDATE commands SET status = 'acked', ack_at = ?, result_json = ?
+        WHERE id = ? AND device_id = ?
+        """,
+        (now, result_json, command_id, device_id),
+    )
+    changed = cur.rowcount
+    con.commit()
+    con.close()
+
+    if changed == 0:
+        raise HTTPException(status_code=404, detail="command not found")
+
+    return {"ok": True, "ack_at": now}
 
 
 @app.get("/devices")

@@ -2,6 +2,7 @@ import json
 import time
 import socket
 from pathlib import Path
+import threading
 
 import requests
 import psutil
@@ -32,6 +33,15 @@ def main():
     interval = int(cfg.get("interval_sec", 10))
     headers = {"X-Auth-Token": cfg.get("auth_token", "")}
 
+    # compute server base (strip last path segment e.g. /ingest)
+    server_url = cfg.get("server_url", "")
+    if "/" in server_url:
+        server_base = server_url.rsplit("/", 1)[0]
+    else:
+        server_base = server_url
+
+    cmd_poll_interval = int(cfg.get("cmd_poll_interval_sec", 10))
+
     print(
         f"[agent] starting device_id={cfg.get('device_id')} "
         f"interval={interval}s server={cfg.get('server_url')} version={AGENT_VERSION}"
@@ -58,6 +68,51 @@ def main():
         except Exception as e:
             last_error = repr(e)
             print("[agent] ERROR sending payload:", last_error)
+
+        # start command polling thread once
+        if not any(t.name == "cmd-poller" for t in threading.enumerate()):
+            def poll_loop():
+                while True:
+                    try:
+                        try:
+                            resp = requests.get(
+                                f"{server_base}/devices/{cfg['device_id']}/commands/next",
+                                headers=headers,
+                                timeout=5,
+                            )
+                        except Exception as e:
+                            print("[agent] command poll error:", repr(e))
+                            time.sleep(cmd_poll_interval)
+                            continue
+
+                        if resp.status_code == 401:
+                            print("[agent] command poll unauthorized (bad token)")
+                        elif resp.status_code != 200:
+                            print("[agent] command poll unexpected status:", resp.status_code)
+                        else:
+                            try:
+                                cmd = resp.json()
+                            except Exception:
+                                cmd = None
+
+                            if cmd:
+                                print("[agent] received command:", cmd)
+                                # immediately ack (mock execution)
+                                try:
+                                    ack_body = {"success": True, "message": "executed (mock)"}
+                                    ack_url = f"{server_base}/devices/{cfg['device_id']}/commands/{cmd.get('id')}/ack"
+                                    aresp = requests.post(ack_url, json=ack_body, headers=headers, timeout=5)
+                                    print("[agent] acked command", cmd.get('id'), "status", aresp.status_code)
+                                except Exception as e:
+                                    print("[agent] ERROR acking command:", repr(e))
+
+                        time.sleep(cmd_poll_interval)
+                    except Exception as e:
+                        print("[agent] poll loop exception:", repr(e))
+                        time.sleep(cmd_poll_interval)
+
+            t = threading.Thread(target=poll_loop, name="cmd-poller", daemon=True)
+            t.start()
 
         time.sleep(interval)
 
