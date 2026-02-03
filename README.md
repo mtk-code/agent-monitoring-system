@@ -29,6 +29,18 @@ curl http://127.0.0.1:8000/health
 
 ---
 
+## Web UI
+
+Open the web dashboard at:
+
+```
+http://127.0.0.1:8000/ui
+```
+
+The UI shows devices and allows sending a "restart" command per device (uses the server's token internally for the API call).
+
+---
+
 ## Run Agent Locally
 
 ```bash

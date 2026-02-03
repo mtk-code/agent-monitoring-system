@@ -4,7 +4,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional
 
@@ -12,6 +13,7 @@ DB_PATH = Path(__file__).parent / "devices.db"
 EXPECTED_TOKEN = os.getenv("EXPECTED_TOKEN", "dev-token-123")
 
 app = FastAPI(title="Agent Monitoring Server")
+templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 
 class AgentPayload(BaseModel):
@@ -212,3 +214,32 @@ def devices():
         )
 
     return result
+
+
+@app.get("/ui")
+def ui(request: Request):
+    # reuse devices logic to build display rows
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("SELECT device_id, hostname, last_seen, last_payload_json FROM devices")
+    rows = cur.fetchall()
+    con.close()
+
+    now = datetime.now(timezone.utc)
+    offline_after = timedelta(seconds=30)
+
+    devices_list = []
+    for device_id, hostname, last_seen, last_payload_json in rows:
+        last_seen_dt = datetime.fromisoformat(last_seen)
+        online = (now - last_seen_dt) <= offline_after
+        last_payload = json.loads(last_payload_json) if last_payload_json else None
+
+        devices_list.append({
+            "device_id": device_id,
+            "hostname": hostname,
+            "last_seen": last_seen,
+            "online": online,
+            "last_payload": last_payload,
+        })
+
+    return templates.TemplateResponse("ui.html", {"request": request, "devices": devices_list, "token": EXPECTED_TOKEN})

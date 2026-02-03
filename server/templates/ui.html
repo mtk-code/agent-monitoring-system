@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Monitoring - UI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      .truncate { max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    </style>
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1>Agents</h1>
+        <div>Auto-refreshing every 10s</div>
+      </div>
+
+      <table class="table table-striped table-sm">
+        <thead>
+          <tr>
+            <th>Device ID</th>
+            <th>Hostname</th>
+            <th>Online</th>
+            <th>Last Seen</th>
+            <th>CPU</th>
+            <th>RAM</th>
+            <th>Disk</th>
+            <th>Uptime</th>
+            <th>Agent Ver</th>
+            <th>Status</th>
+            <th>Last Error</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in devices %}
+          <tr>
+            <td>{{ d.device_id }}</td>
+            <td>{{ d.hostname }}</td>
+            <td>
+              {% if d.online %}
+                <span class="badge bg-success">Online</span>
+              {% else %}
+                <span class="badge bg-danger">Offline</span>
+              {% endif %}
+            </td>
+            <td>{{ d.last_seen }}</td>
+            <td>{{ d.last_payload.cpu if d.last_payload }}</td>
+            <td>{{ d.last_payload.ram if d.last_payload }}</td>
+            <td>{{ d.last_payload.disk if d.last_payload }}</td>
+            <td>{{ d.last_payload.uptime_sec if d.last_payload }}</td>
+            <td>{{ d.last_payload.agent_version if d.last_payload }}</td>
+            <td>{{ d.last_payload.status if d.last_payload }}</td>
+            <td class="truncate" title="{{ d.last_payload.last_error if d.last_payload }}">{{ (d.last_payload.last_error[:80] + '...') if d.last_payload and d.last_payload.last_error and (d.last_payload.last_error|length > 80) else (d.last_payload.last_error if d.last_payload) }}</td>
+            <td>
+              <button class="btn btn-sm btn-primary" onclick="sendRestart('{{ d.device_id }}', this)">Send restart</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+    </div>
+
+    <script>
+      const token = "{{ token }}";
+      async function sendRestart(deviceId, btn) {
+        try {
+          btn.disabled = true;
+          const res = await fetch(`/devices/${deviceId}/commands`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Auth-Token': token
+            },
+            body: JSON.stringify({ command: 'restart', args: {} })
+          });
+          if (res.ok) {
+            btn.innerText = 'Sent';
+            setTimeout(() => { btn.innerText = 'Send restart'; btn.disabled = false; }, 2000);
+          } else {
+            const t = await res.text();
+            alert('Error: ' + res.status + ' ' + t);
+            btn.disabled = false;
+          }
+        } catch (e) {
+          alert('Request failed: ' + e);
+          btn.disabled = false;
+        }
+      }
+
+      setTimeout(() => { location.reload(); }, 10000);
+    </script>
+  </body>
+</html>
