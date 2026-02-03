@@ -7,3 +7,4 @@ Distributed agent monitoring system with heartbeat, metrics collection, offline 
 - server/ : FastAPI ingest + registry
 - shared/ : shared protocol/models
 - docs/ : architecture notes
+- docker compose up --build

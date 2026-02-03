@@ -1,13 +1,14 @@
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
-from datetime import datetime, timezone 
-from datetime import timedelta
+import os
 import json
 import sqlite3
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 DB_PATH = Path(__file__).parent / "devices.db"
-EXPECTED_TOKEN = "dev-token-123"
+EXPECTED_TOKEN = os.getenv("EXPECTED_TOKEN", "dev-token-123")
 
 app = FastAPI(title="Agent Monitoring Server")
 
@@ -47,16 +48,20 @@ def startup():
     init_db()
 
 
-@app.post("/ingest")
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 @app.post("/ingest")
 def ingest(payload: AgentPayload, x_auth_token: str = Header(default="")):
     if x_auth_token != EXPECTED_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
     now = datetime.now(timezone.utc).isoformat()
+
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-
     cur.execute(
         """
         INSERT INTO devices (device_id, hostname, last_seen, last_payload_json)
@@ -68,9 +73,9 @@ def ingest(payload: AgentPayload, x_auth_token: str = Header(default="")):
         """,
         (payload.device_id, payload.hostname, now, json.dumps(payload.dict())),
     )
-
     con.commit()
     con.close()
+
     return {"ok": True, "ts_utc": now}
 
 
@@ -86,20 +91,18 @@ def devices():
     offline_after = timedelta(seconds=30)
 
     result = []
-
-    for r in rows:
-        last_seen_dt = datetime.fromisoformat(r[2])
+    for device_id, hostname, last_seen, last_payload_json in rows:
+        last_seen_dt = datetime.fromisoformat(last_seen)
         online = (now - last_seen_dt) <= offline_after
 
         result.append(
             {
-                "device_id": r[0],
-                "hostname": r[1],
-                "last_seen": r[2],
+                "device_id": device_id,
+                "hostname": hostname,
+                "last_seen": last_seen,
                 "online": online,
-                "last_payload": json.loads(r[3]) if r[3] else None,
+                "last_payload": json.loads(last_payload_json) if last_payload_json else None,
             }
         )
 
     return result
-
