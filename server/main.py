@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from datetime import datetime, timezone
+from datetime import datetime, timezone 
+from datetime import timedelta
 import json
 import sqlite3
 from pathlib import Path
@@ -72,12 +73,24 @@ def devices():
     rows = cur.fetchall()
     con.close()
 
-    return [
-        {
-            "device_id": r[0],
-            "hostname": r[1],
-            "last_seen": r[2],
-            "last_payload": json.loads(r[3]) if r[3] else None,
-        }
-        for r in rows
-    ]
+    now = datetime.now(timezone.utc)
+    offline_after = timedelta(seconds=30)
+
+    result = []
+
+    for r in rows:
+        last_seen_dt = datetime.fromisoformat(r[2])
+        online = (now - last_seen_dt) <= offline_after
+
+        result.append(
+            {
+                "device_id": r[0],
+                "hostname": r[1],
+                "last_seen": r[2],
+                "online": online,
+                "last_payload": json.loads(r[3]) if r[3] else None,
+            }
+        )
+
+    return result
+
