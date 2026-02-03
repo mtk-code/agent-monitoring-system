@@ -13,6 +13,10 @@ app = FastAPI(title="Agent Monitoring Server")
 
 
 class AgentPayload(BaseModel):
+    agent_version: str
+    status: str
+    last_error: str
+
     device_id: str
     hostname: str
     cpu: float
