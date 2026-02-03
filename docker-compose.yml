@@ -1,0 +1,13 @@
+services:
+  server:
+    build:
+      context: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      - EXPECTED_TOKEN=dev-token-123
+    volumes:
+      - server_data:/app
+
+volumes:
+  server_data:
