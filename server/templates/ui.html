@@ -12,14 +12,18 @@
   <body class="p-4">
     <div class="container">
       <div class="d-flex justify-content-between align-items-center mb-3">
-          <h1>Agents</h1>
+          <h1 id="pageTitle">Agents</h1>
           <div>
-            Auto-refreshing every 10s
-            <a class="btn btn-sm btn-outline-primary ms-2" href="/org">Organization</a>
+            <span id="refreshText">Auto-refreshing every 10s</span>
+            <select id="langSelect" class="form-select form-select-sm d-inline-block" style="width: auto; margin-left: 10px;">
+              <option value="en">English</option>
+              <option value="tr">Türkçe</option>
+            </select>
+            <a class="btn btn-sm btn-outline-primary ms-2" href="/org" id="btnOrg">Organization</a>
             {% if user and user.is_admin == 1 %}
-            <a class="btn btn-sm btn-outline-danger ms-2" href="/ui/admin/orgs">Admin</a>
+            <a class="btn btn-sm btn-outline-danger ms-2" href="/ui/admin/orgs" id="btnAdmin">Admin</a>
             {% endif %}
-            <a class="btn btn-sm btn-outline-secondary ms-2" href="/login">Logout</a>
+            <a class="btn btn-sm btn-outline-secondary ms-2" href="/login" id="btnLogout">Logout</a>
           </div>
         </div>
         <div class="mb-3">
@@ -33,18 +37,18 @@
       <table class="table table-striped table-sm">
         <thead>
           <tr>
-            <th>Device ID</th>
-            <th>Hostname</th>
-            <th>Online</th>
-            <th>Last Seen</th>
-            <th>CPU</th>
-            <th>RAM</th>
-            <th>Disk</th>
-            <th>Uptime</th>
-            <th>Agent Ver</th>
-            <th>Status</th>
-            <th>Last Error</th>
-            <th>Action</th>
+            <th id="thDeviceId">Device ID</th>
+            <th id="thHostname">Hostname</th>
+            <th id="thOnline">Online</th>
+            <th id="thLastSeen">Last Seen</th>
+            <th id="thCpu">CPU</th>
+            <th id="thRam">RAM</th>
+            <th id="thDisk">Disk</th>
+            <th id="thUptime">Uptime</th>
+            <th id="thAgentVer">Agent Ver</th>
+            <th id="thStatus">Status</th>
+            <th id="thLastError">Last Error</th>
+            <th id="thAction">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -54,9 +58,9 @@
             <td>{{ d.hostname }}</td>
             <td>
               {% if d.online %}
-                <span class="badge bg-success">Online</span>
+                <span class="badge bg-success" id="online-{{ d.device_id }}">Online</span>
               {% else %}
-                <span class="badge bg-danger">Offline</span>
+                <span class="badge bg-danger" id="offline-{{ d.device_id }}">Offline</span>
               {% endif %}
             </td>
             <td>{{ d.last_seen }}</td>
@@ -68,7 +72,7 @@
             <td>{{ d.last_payload.status if d.last_payload }}</td>
             <td class="truncate" title="{{ d.last_payload.last_error if d.last_payload }}">{{ (d.last_payload.last_error[:80] + '...') if d.last_payload and d.last_payload.last_error and (d.last_payload.last_error|length > 80) else (d.last_payload.last_error if d.last_payload) }}</td>
             <td>
-              <button class="btn btn-sm btn-primary" onclick="sendRestart('{{ d.device_id }}', this)">Send restart</button>
+              <button class="btn btn-sm btn-primary" onclick="sendRestart('{{ d.device_id }}', this)" id="btnRestart-{{ d.device_id }}">Send restart</button>
             </td>
           </tr>
           {% endfor %}
@@ -78,6 +82,74 @@
     </div>
 
     <script>
+      let currentLang = localStorage.getItem('lang') || 'en';
+      let translations = {};
+
+      async function loadTranslations(lang) {
+        try {
+          const res = await fetch(`/api/translations/${lang}`);
+          if (res.ok) {
+            translations = await res.json();
+            currentLang = lang;
+            localStorage.setItem('lang', lang);
+            updateUIText();
+          }
+        } catch (e) {
+          console.error('Failed to load translations:', e);
+        }
+      }
+
+      function t(key) {
+        const keys = key.split('.');
+        let obj = translations;
+        for (let k of keys) {
+          obj = obj[k];
+          if (!obj) return key;
+        }
+        return obj;
+      }
+
+      function updateUIText() {
+        document.getElementById('pageTitle').innerText = t('devices.title');
+        document.getElementById('refreshText').innerText = t('nav.refresh');
+        document.getElementById('btnOrg').innerText = t('nav.organization');
+        document.getElementById('btnAdmin').innerText = t('nav.admin');
+        document.getElementById('btnLogout').innerText = t('nav.logout');
+        
+        document.getElementById('thDeviceId').innerText = t('devices.device_id');
+        document.getElementById('thHostname').innerText = t('devices.hostname');
+        document.getElementById('thOnline').innerText = t('devices.online');
+        document.getElementById('thLastSeen').innerText = t('devices.last_seen');
+        document.getElementById('thCpu').innerText = t('devices.cpu');
+        document.getElementById('thRam').innerText = t('devices.ram');
+        document.getElementById('thDisk').innerText = t('devices.disk');
+        document.getElementById('thUptime').innerText = t('devices.uptime');
+        document.getElementById('thAgentVer').innerText = t('devices.agent_ver');
+        document.getElementById('thStatus').innerText = t('devices.status');
+        document.getElementById('thLastError').innerText = t('devices.last_error');
+        document.getElementById('thAction').innerText = t('devices.action');
+        
+        // Update button texts
+        document.querySelectorAll('[id^="btnRestart-"]').forEach(btn => {
+          if (btn.innerText !== 'Sent') btn.innerText = t('devices.send_restart');
+        });
+        
+        // Update online/offline labels
+        document.querySelectorAll('[id^="online-"]').forEach(el => {
+          el.innerText = t('devices.online');
+        });
+        document.querySelectorAll('[id^="offline-"]').forEach(el => {
+          el.innerText = t('devices.offline');
+        });
+      }
+
+      document.getElementById('langSelect').value = currentLang;
+      document.getElementById('langSelect').addEventListener('change', (e) => {
+        loadTranslations(e.target.value);
+      });
+
+      loadTranslations(currentLang);
+
       async function sendRestart(deviceId, btn) {
         try {
           btn.disabled = true;
@@ -89,11 +161,11 @@
             body: JSON.stringify({ command: 'restart', args: {} })
           });
           if (res.ok) {
-            btn.innerText = 'Sent';
-            setTimeout(() => { btn.innerText = 'Send restart'; btn.disabled = false; }, 2000);
+            btn.innerText = t('devices.sent');
+            setTimeout(() => { btn.innerText = t('devices.send_restart'); btn.disabled = false; }, 2000);
           } else {
-            const t = await res.text();
-            alert('Error: ' + res.status + ' ' + t);
+            const t_text = await res.text();
+            alert('Error: ' + res.status + ' ' + t_text);
             btn.disabled = false;
           }
         } catch (e) {

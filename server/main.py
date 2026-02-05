@@ -18,10 +18,18 @@ EXPECTED_TOKEN = os.getenv("EXPECTED_TOKEN", "dev-token-123")
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-jwt-secret")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
+TRANSLATIONS_DIR = Path(__file__).parent / "translations"
 
 app = FastAPI(title="Agent Monitoring Server")
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Load translations
+TRANSLATIONS = {}
+for lang_file in TRANSLATIONS_DIR.glob("*.json"):
+    lang = lang_file.stem
+    with open(lang_file, 'r', encoding='utf-8') as f:
+        TRANSLATIONS[lang] = json.load(f)
 
 
 class AgentPayload(BaseModel):
@@ -176,6 +184,13 @@ def startup():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/translations/{lang}")
+def get_translations(lang: str):
+    if lang not in TRANSLATIONS:
+        lang = "en"
+    return TRANSLATIONS[lang]
 
 
 @app.post("/ingest")

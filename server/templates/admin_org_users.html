@@ -8,22 +8,28 @@
   </head>
   <body class="p-4">
     <div class="container">
+      <div style="text-align: right; margin-bottom: 10px;">
+        <select id="langSelect" class="form-select form-select-sm d-inline-block" style="width: auto;">
+          <option value="en">English</option>
+          <option value="tr">Türkçe</option>
+        </select>
+      </div>
       <div class="d-flex justify-content-between align-items-center mb-3">
-        <h1>Users for {{ org.name }}</h1>
+        <h1 id="pageTitle">Users for {{ org.name }}</h1>
         <div>
-          <a href="/ui/admin/users" class="btn btn-sm btn-info">User Management</a>
-          <a href="/ui/admin/orgs" class="btn btn-sm btn-secondary">Back</a>
+          <a href="/ui/admin/users" class="btn btn-sm btn-info" id="btnUserMgmt">User Management</a>
+          <a href="/ui/admin/orgs" class="btn btn-sm btn-secondary" id="btnBack">Back</a>
         </div>
       </div>
 
       <table class="table table-striped table-sm">
         <thead>
           <tr>
-            <th>ID</th>
-            <th>Email</th>
-            <th>Is Admin</th>
-            <th>Created At</th>
-            <th>Actions</th>
+            <th id="thId">ID</th>
+            <th id="thEmail">Email</th>
+            <th id="thIsAdmin">Is Admin</th>
+            <th id="thCreatedAt">Created At</th>
+            <th id="thActions">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -36,11 +42,11 @@
             <td>
               {% if u.is_admin != 1 %}
               <form method="post" action="/api/admin/users/{{ u.id }}/promote" style="display:inline">
-                <button class="btn btn-sm btn-outline-primary">Promote</button>
+                <button class="btn btn-sm btn-outline-primary" id="btnPromote-{{ u.id }}">Promote</button>
               </form>
               {% else %}
               <form method="post" action="/api/admin/users/{{ u.id }}/demote" style="display:inline">
-                <button class="btn btn-sm btn-outline-warning">Demote</button>
+                <button class="btn btn-sm btn-outline-warning" id="btnDemote-{{ u.id }}">Demote</button>
               </form>
               {% endif %}
             </td>
@@ -49,5 +55,70 @@
         </tbody>
       </table>
     </div>
+
+    <script>
+      let currentLang = localStorage.getItem('lang') || 'en';
+      let translations = {};
+
+      async function loadTranslations(lang) {
+        try {
+          const res = await fetch(`/api/translations/${lang}`);
+          if (res.ok) {
+            translations = await res.json();
+            currentLang = lang;
+            localStorage.setItem('lang', lang);
+            updateUIText();
+            return true;
+          }
+        } catch (e) {
+          console.error('Failed to load translations:', e);
+        }
+        return false;
+      }
+
+      function t(key, defaultVal = key) {
+        const keys = key.split('.');
+        let obj = translations;
+        for (let k of keys) {
+          if (obj && typeof obj === 'object') {
+            obj = obj[k];
+          } else {
+            return defaultVal;
+          }
+        }
+        return obj || defaultVal;
+      }
+
+      function updateUIText() {
+        document.getElementById('pageTitle').innerText = t('org_users.title', 'Users for') + ' {{ org.name }}';
+        document.getElementById('btnUserMgmt').innerText = t('orgs.user_management', 'User Management');
+        document.getElementById('btnBack').innerText = t('nav.back', 'Back');
+        
+        document.getElementById('thId').innerText = t('org_users.id', 'ID') || t('users.id', 'ID');
+        document.getElementById('thEmail').innerText = t('org_users.email', 'Email');
+        document.getElementById('thIsAdmin').innerText = t('org_users.is_admin', 'Is Admin');
+        document.getElementById('thCreatedAt').innerText = t('org_users.created_at', 'Created At');
+        document.getElementById('thActions').innerText = t('org_users.actions', 'Actions');
+        
+        // Update button texts
+        document.querySelectorAll('[id^="btnPromote-"]').forEach(btn => {
+          btn.innerText = t('org_users.promote', 'Promote');
+        });
+        document.querySelectorAll('[id^="btnDemote-"]').forEach(btn => {
+          btn.innerText = t('org_users.demote', 'Demote');
+        });
+      }
+
+      // Language selector
+      document.getElementById('langSelect').value = currentLang;
+      document.getElementById('langSelect').addEventListener('change', (e) => {
+        loadTranslations(e.target.value).then(() => {
+          window.location.reload();
+        });
+      });
+
+      // Load translations on page load
+      loadTranslations(currentLang);
+    </script>
   </body>
 </html>
