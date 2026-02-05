@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone, timedelta, timedelta as td
+from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.templating import Jinja2Templates
@@ -13,7 +13,7 @@ from typing import Optional
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-DB_PATH = Path(__file__).parent / "devices.db"
+DB_PATH = Path(os.getenv("DB_PATH", str(Path(__file__).parent / "devices.db")))
 EXPECTED_TOKEN = os.getenv("EXPECTED_TOKEN", "dev-token-123")
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-jwt-secret")
 JWT_ALGORITHM = "HS256"
@@ -48,66 +48,10 @@ class CommandAck(BaseModel):
 
 
 def init_db():
+    # migration-based init: safe to run against existing DB without deleting data
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
 
-    # devices table (ensure org_id column exists)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS devices (
-            device_id TEXT PRIMARY KEY,
-            hostname TEXT,
-            last_seen TEXT,
-            last_payload_json TEXT,
-            org_id INTEGER
-        )
-        """
-    )
-
-    # organizations table
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS organizations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            api_token TEXT UNIQUE,
-            created_at TEXT
-        )
-        """
-    )
-
-    # users table
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE,
-            password_hash TEXT,
-            org_id INTEGER,
-            is_admin INTEGER DEFAULT 0,
-            created_at TEXT
-        )
-        """
-    )
-
-    # commands table
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS commands (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            org_id INTEGER,
-            command TEXT,
-            args_json TEXT,
-            status TEXT,
-            created_at TEXT,
-            acked_at TEXT,
-            result_json TEXT
-        )
-        """
-    )
-
-    # helper to add missing columns
     def ensure_column(table, column, definition):
         cur.execute(f"PRAGMA table_info({table})")
         cols = [r[1] for r in cur.fetchall()]
@@ -117,33 +61,108 @@ def init_db():
             except Exception:
                 pass
 
-    ensure_column('devices', 'org_id', 'INTEGER')
-    ensure_column('users', 'org_id', 'INTEGER')
-    ensure_column('users', 'is_admin', 'INTEGER DEFAULT 0')
-    ensure_column('users', 'created_at', 'TEXT')
-    ensure_column('commands', 'org_id', 'INTEGER')
-    ensure_column('commands', 'acked_at', 'TEXT')
-    ensure_column('commands', 'result_json', 'TEXT')
+    def get_schema_version():
+        cur.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+        cur.execute("SELECT version FROM schema_version LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            cur.execute("INSERT INTO schema_version (version) VALUES (0)")
+            return 0
+        return int(row[0])
 
-    # seed default org and admin if no orgs exist
-    cur.execute("SELECT COUNT(1) FROM organizations")
-    row = cur.fetchone()
-    org_count = row[0] if row else 0
-    if org_count == 0:
-        now = datetime.now(timezone.utc).isoformat()
+    def set_schema_version(v):
+        cur.execute("UPDATE schema_version SET version = ?", (v,))
+
+    def migration_1():
+        # Ensure core tables exist
         cur.execute(
-            "INSERT INTO organizations (name, api_token, created_at) VALUES (?, ?, ?)",
-            ("default", EXPECTED_TOKEN, now),
-        )
-        org_id = cur.lastrowid
-        default_pw = pwd_context.hash("admin")
-        try:
-            cur.execute(
-                "INSERT OR IGNORE INTO users (email, password_hash, org_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("admin@local", default_pw, org_id, 1, now),
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                device_id TEXT PRIMARY KEY,
+                hostname TEXT,
+                last_seen TEXT,
+                last_payload_json TEXT,
+                org_id INTEGER
             )
-        except Exception:
-            pass
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS organizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                api_token TEXT UNIQUE,
+                created_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE,
+                password_hash TEXT,
+                org_id INTEGER,
+                is_admin INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT,
+                org_id INTEGER,
+                command TEXT,
+                args_json TEXT,
+                status TEXT,
+                created_at TEXT,
+                acked_at TEXT,
+                result_json TEXT
+            )
+            """
+        )
+
+        # Ensure commonly-added columns exist (idempotent)
+        ensure_column('devices', 'org_id', 'INTEGER')
+        ensure_column('users', 'org_id', 'INTEGER')
+        ensure_column('users', 'is_admin', 'INTEGER DEFAULT 0')
+        ensure_column('users', 'created_at', 'TEXT')
+        ensure_column('commands', 'org_id', 'INTEGER')
+        ensure_column('commands', 'acked_at', 'TEXT')
+        ensure_column('commands', 'result_json', 'TEXT')
+
+        # seed default org and admin if no orgs exist
+        cur.execute("SELECT COUNT(1) FROM organizations")
+        row = cur.fetchone()
+        org_count = row[0] if row else 0
+        if org_count == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                "INSERT INTO organizations (name, api_token, created_at) VALUES (?, ?, ?)",
+                ("default", EXPECTED_TOKEN, now),
+            )
+            org_id = cur.lastrowid
+            default_pw = pwd_context.hash("admin")
+            try:
+                cur.execute(
+                    "INSERT OR IGNORE INTO users (email, password_hash, org_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
+                    ("admin@local", default_pw, org_id, 1, now),
+                )
+            except Exception:
+                pass
+
+        # record migration
+        set_schema_version(1)
+
+    # run migrations sequentially
+    current = get_schema_version()
+    if current < 1:
+        migration_1()
 
     con.commit()
     con.close()
@@ -356,7 +375,7 @@ def resolve_org_from_request(request: Request, x_auth_token: str = ""):
 
 def create_access_token(data: dict, expires_minutes: int = JWT_EXPIRE_MINUTES):
     to_encode = data.copy()
-    expire = datetime.utcnow() + td(minutes=expires_minutes)
+    expire = datetime.utcnow() + timedelta(minutes=expires_minutes)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return encoded_jwt
@@ -401,12 +420,12 @@ def get_user_from_token(token: str):
         return None
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute('SELECT id, email, org_id FROM users WHERE id = ?', (user_id,))
+    cur.execute('SELECT id, email, org_id, is_admin FROM users WHERE id = ?', (user_id,))
     row = cur.fetchone()
     con.close()
     if not row:
         return None
-    return {'id': row[0], 'email': row[1], 'org_id': row[2]}
+    return {'id': row[0], 'email': row[1], 'org_id': row[2], 'is_admin': row[3]}
 
 
 def get_org_by_id(org_id: int):
@@ -484,6 +503,72 @@ def org_create_user(body: dict, request: Request):
     return {'ok': True, 'id': uid, 'email': email}
 
 
+@app.get('/api/orgs')
+def api_get_orgs(request: Request):
+    user = require_user_or_redirect(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('SELECT id, name, api_token, created_at FROM organizations')
+    orgs = [{'id': r[0], 'name': r[1], 'api_token': r[2], 'created_at': r[3]} for r in cur.fetchall()]
+    con.close()
+    return {'orgs': orgs}
+
+
+@app.post('/api/orgs')
+def api_create_org(body: dict, request: Request):
+    user = require_user_or_redirect(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    name = body.get('name')
+    admin_email = body.get('admin_email')
+    admin_password = body.get('admin_password')
+    if not name or not admin_email or not admin_password:
+        raise HTTPException(status_code=400, detail='missing fields')
+
+    import secrets
+    new_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc).isoformat()
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    try:
+        cur.execute('INSERT INTO organizations (name, api_token, created_at) VALUES (?, ?, ?)', (name, new_token, now))
+        org_id = cur.lastrowid
+        pw_hash = pwd_context.hash(admin_password)
+        cur.execute('INSERT INTO users (email, password_hash, org_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?)', (admin_email, pw_hash, org_id, 1, now))
+        con.commit()
+    except sqlite3.IntegrityError:
+        con.close()
+        raise HTTPException(status_code=400, detail='org or user exists')
+    con.close()
+    return {'ok': True, 'org': {'id': org_id, 'name': name, 'api_token': new_token, 'created_at': now}}
+
+
+@app.post('/api/admin/devices/{device_id}/move')
+def api_move_device(device_id: str, body: dict, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    org_id = body.get('org_id')
+    if not org_id:
+        raise HTTPException(status_code=400, detail='missing org_id')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('UPDATE devices SET org_id = ? WHERE device_id = ?', (org_id, device_id))
+    if cur.rowcount == 0:
+        con.close()
+        raise HTTPException(status_code=404, detail='device not found')
+    con.commit()
+    con.close()
+    return {'ok': True, 'device_id': device_id, 'org_id': org_id}
+
+
 def require_user_or_redirect(request: Request):
     # check Authorization header then cookie
     auth = request.headers.get('Authorization')
@@ -527,4 +612,147 @@ def ui(request: Request):
             "last_payload": last_payload,
         })
 
-    return templates.TemplateResponse("ui.html", {"request": request, "devices": devices_list})
+    return templates.TemplateResponse("ui.html", {"request": request, "devices": devices_list, "user": user})
+
+
+@app.get('/ui/admin/orgs')
+def admin_orgs_page(request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        return RedirectResponse('/login')
+    return templates.TemplateResponse('admin_orgs.html', {'request': request})
+
+
+@app.get('/ui/admin/orgs/{org_id}')
+def admin_org_users_page(org_id: int, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        return RedirectResponse('/login')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('SELECT id, name, api_token, created_at FROM organizations WHERE id = ?', (org_id,))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        raise HTTPException(status_code=404, detail='org not found')
+    org = {'id': row[0], 'name': row[1], 'api_token': row[2], 'created_at': row[3]}
+
+    cur.execute('SELECT id, email, is_admin, created_at FROM users WHERE org_id = ?', (org_id,))
+    users = []
+    for r in cur.fetchall():
+        users.append({'id': r[0], 'email': r[1], 'is_admin': r[2], 'created_at': r[3]})
+    con.close()
+
+    return templates.TemplateResponse('admin_org_users.html', {'request': request, 'org': org, 'users': users})
+
+
+@app.post('/api/admin/users/{user_id}/promote')
+def api_promote_user(user_id: int, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('UPDATE users SET is_admin = 1 WHERE id = ?', (user_id,))
+    if cur.rowcount == 0:
+        con.close()
+        raise HTTPException(status_code=404, detail='user not found')
+    con.commit()
+    con.close()
+    return RedirectResponse('/ui/admin/orgs', status_code=303)
+
+
+@app.post('/api/admin/users/{user_id}/demote')
+def api_demote_user(user_id: int, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('UPDATE users SET is_admin = 0 WHERE id = ?', (user_id,))
+    if cur.rowcount == 0:
+        con.close()
+        raise HTTPException(status_code=404, detail='user not found')
+    con.commit()
+    con.close()
+    return RedirectResponse('/ui/admin/orgs', status_code=303)
+
+
+@app.get('/ui/admin/users')
+def admin_users_page(request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        return RedirectResponse('/login')
+    return templates.TemplateResponse('admin_users.html', {'request': request})
+
+
+@app.get('/api/admin/users')
+def api_list_users(request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''
+        SELECT u.id, u.email, u.org_id, u.is_admin, u.created_at, o.name
+        FROM users u
+        LEFT JOIN organizations o ON u.org_id = o.id
+        ORDER BY u.id ASC
+    ''')
+    users = []
+    for r in cur.fetchall():
+        users.append({'id': r[0], 'email': r[1], 'org_id': r[2], 'is_admin': r[3], 'created_at': r[4], 'org_name': r[5]})
+    con.close()
+    return {'users': users}
+
+
+@app.post('/api/admin/users')
+def api_create_user(body: dict, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    email = body.get('email')
+    org_id = body.get('org_id')
+    password = body.get('password')
+    is_admin = body.get('is_admin', 0)
+    
+    if not email or not org_id or not password:
+        raise HTTPException(status_code=400, detail='missing fields')
+
+    pw_hash = pwd_context.hash(password)
+    now = datetime.now(timezone.utc).isoformat()
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    try:
+        cur.execute('INSERT INTO users (email, password_hash, org_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?)',
+                    (email, pw_hash, org_id, is_admin, now))
+        con.commit()
+        uid = cur.lastrowid
+    except sqlite3.IntegrityError:
+        con.close()
+        raise HTTPException(status_code=400, detail='user exists')
+    con.close()
+    return {'ok': True, 'id': uid, 'email': email}
+
+
+@app.delete('/api/admin/users/{user_id}')
+def api_delete_user(user_id: int, request: Request):
+    user = require_user_or_redirect(request)
+    if not user or user.get('is_admin') != 1:
+        raise HTTPException(status_code=403, detail='admin required')
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('DELETE FROM users WHERE id = ?', (user_id,))
+    if cur.rowcount == 0:
+        con.close()
+        raise HTTPException(status_code=404, detail='user not found')
+    con.commit()
+    con.close()
+    return {'ok': True}

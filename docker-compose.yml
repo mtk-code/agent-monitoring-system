@@ -6,8 +6,10 @@ services:
       - "8000:8000"
     environment:
       - EXPECTED_TOKEN=dev-token-123
+      - DB_PATH=/app/data/devices.db
     volumes:
-      - server_data:/app
+      - server_data:/app/data
+    
 
 volumes:
   server_data:

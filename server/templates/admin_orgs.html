@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Admin - Organizations</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      .token-masked { font-family: monospace; user-select: none; }
+      .token-cell { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    </style>
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1>Organizations</h1>
+        <div>
+          <a href="/ui/admin/users" class="btn btn-sm btn-info">User Management</a>
+          <a href="/ui" class="btn btn-sm btn-secondary">Back</a>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createOrgModal">Create Organization</button>
+      </div>
+
+      <div id="loadingMsg" class="alert alert-info" style="display:none;">Loading organizations...</div>
+      <div id="errorMsg" class="alert alert-danger" style="display:none;"></div>
+      
+      <table class="table table-striped table-sm">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>API Token</th>
+            <th>Created At</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="orgsTable">
+          <tr><td colspan="5" class="text-center">Loading...</td></tr>
+        </tbody>
+      </table>
+
+    <div class="card mt-3 p-3">
+      <h5 class="mb-2">Move Device Between Orgs (admin)</h5>
+      <form id="moveDeviceForm" class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label class="form-label">Device ID</label>
+          <input type="text" id="moveDeviceId" class="form-control" placeholder="device-123" required>
+        </div>
+        <div class="col-auto">
+          <label class="form-label">Target Org</label>
+          <select id="moveOrgSelect" class="form-select" required>
+            <option value="">Select org...</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-primary">Move</button>
+        </div>
+        <div class="col-12">
+          <div id="moveErr" class="text-danger"></div>
+          <div id="moveSuccess" class="text-success"></div>
+        </div>
+      </form>
+    </div>
+    </div>
+
+    <!-- Create Org Modal -->
+    <div class="modal fade" id="createOrgModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Create Organization</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form id="createOrgForm">
+            <div class="modal-body">
+              <div class="mb-2">
+                <label class="form-label">Organization Name</label>
+                <input type="text" id="orgName" class="form-control" placeholder="e.g., ACME Corp" required>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Admin Email</label>
+                <input type="email" id="adminEmail" class="form-control" placeholder="admin@example.local" required>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Admin Password</label>
+                <input type="password" id="adminPassword" class="form-control" placeholder="Choose a password" required>
+              </div>
+              <div id="createErr" class="text-danger"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- rotate modal intentionally omitted from simplified admin view -->
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      const createModal = new bootstrap.Modal(document.getElementById('createOrgModal'));
+
+      function setLoading(show) {
+        document.getElementById('loadingMsg').style.display = show ? 'block' : 'none';
+      }
+
+      function setError(msg) {
+        const el = document.getElementById('errorMsg');
+        if (msg) {
+          el.innerText = msg;
+          el.style.display = 'block';
+        } else {
+          el.style.display = 'none';
+        }
+      }
+
+      async function loadOrgs() {
+        setLoading(true);
+        setError('');
+        try {
+          const url = '/api/orgs';
+          console.log('fetching', url, 'origin', window.location.origin);
+          const res = await fetch(url, { credentials: 'same-origin' });
+          console.log('Response status:', res.status, res.statusText);
+          
+          if (res.status === 401 || res.status === 403) { 
+            console.error('Auth failed:', res.status); 
+            window.location.href = '/login'; 
+            return; 
+          }
+          if (!res.ok) { 
+            console.error(`HTTP error: ${res.status} ${res.statusText}`);
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+          
+          // Parse response - handle both JSON and stringified JSON
+          let data;
+          const contentType = res.headers.get('content-type');
+          const responseText = await res.text();
+          console.log('Response content-type:', contentType);
+          console.log('Response text:', responseText.substring(0, 100));
+          
+          try {
+            data = typeof responseText === 'string' ? JSON.parse(responseText) : responseText;
+          } catch (parseError) {
+            console.error('JSON parse error:', parseError);
+            throw new Error('Failed to parse response: ' + parseError.message);
+          }
+          
+          console.log('Parsed data:', data);
+          if (!data || typeof data !== 'object') {
+            console.error('Invalid data structure:', data);
+            throw new Error('Invalid response structure');
+          }
+          
+          // Extract organizations array
+          const orgs = data.orgs || [];
+          console.log('Organizations array length:', orgs.length);
+          
+          const tbody = document.getElementById('orgsTable');
+          tbody.innerHTML = '';
+          
+          if (!Array.isArray(orgs) || orgs.length === 0) {
+            console.log('No organizations found or not an array');
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No organizations</td></tr>';
+            const orgSelect = document.getElementById('moveOrgSelect');
+            if (orgSelect) {
+              orgSelect.innerHTML = '<option value="">Select org...</option>';
+            }
+          } else {
+            orgs.forEach((org, index) => {
+              console.log(`Adding org ${index}:`, org.name, org.id);
+              const tr = document.createElement('tr');
+              const masked = org.api_token.slice(0, 6) + '...' + org.api_token.slice(-4);
+              tr.innerHTML = `
+                <td>${org.id}</td>
+                <td>${org.name}</td>
+                <td>
+                  <code class="token-masked">${masked}</code>
+                </td>
+                <td>${org.created_at}</td>
+                <td>
+                  <button class="btn btn-sm btn-outline-primary" onclick="copyOrgToken('${org.api_token}')">Copy</button>
+                  <button class="btn btn-sm btn-outline-warning" onclick="rotateOrgToken(${org.id}, '${org.name}')">Rotate</button>
+                  <a href="/ui/admin/orgs/${org.id}" class="btn btn-sm btn-outline-secondary">Users</a>
+                </td>
+              `;
+              tbody.appendChild(tr);
+            });
+            const orgSelect = document.getElementById('moveOrgSelect');
+            if (orgSelect) {
+              orgSelect.innerHTML = '<option value="">Select org...</option>';
+              orgs.forEach(o => {
+                const opt = document.createElement('option');
+                opt.value = o.id;
+                opt.innerText = `${o.name} (${o.id})`;
+                orgSelect.appendChild(opt);
+              });
+            }
+          }
+        } catch (e) {
+          console.error('Load orgs failed:', e.message || e);
+          console.error('Full error:', e);
+          setError('Failed to load organizations: ' + String(e.message || e));
+          const tbody = document.getElementById('orgsTable');
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Error loading organizations</td></tr>';
+        } finally {
+          console.log('Clearing loading state');
+          setLoading(false);
+        }
+      }
+
+      // rotate functionality intentionally omitted in simplified UI
+
+      document.getElementById('createOrgForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = document.getElementById('orgName').value.trim();
+        const adminEmail = document.getElementById('adminEmail').value.trim();
+        const adminPassword = document.getElementById('adminPassword').value;
+        if (!name || !adminEmail || !adminPassword) return;
+        try {
+          const url = '/api/orgs';
+          console.log('fetching', url, 'origin', window.location.origin);
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ name, admin_email: adminEmail, admin_password: adminPassword })
+          });
+          if (res.status === 401 || res.status === 403) { 
+            window.location.href = '/login'; 
+            return; 
+          }
+          if (!res.ok) {
+            let data;
+            try { data = await res.json(); } catch (_) { }
+            throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          const newToken = data.org && data.org.api_token;
+          if (newToken) {
+            // show brief notice with token visible once
+            alert('Organization created. API token (copy it now):\n' + newToken);
+          } else {
+            alert('Organization created.');
+          }
+          document.getElementById('orgName').value = '';
+          document.getElementById('adminEmail').value = '';
+          document.getElementById('adminPassword').value = '';
+          document.getElementById('createErr').innerText = '';
+          createModal.hide();
+          await loadOrgs();
+        } catch (e) {
+          console.error('Create org request failed:', e);
+          document.getElementById('createErr').innerText = 'Error: ' + String(e);
+        }
+      });
+
+      document.getElementById('moveDeviceForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const deviceId = document.getElementById('moveDeviceId').value.trim();
+        const orgId = document.getElementById('moveOrgSelect').value;
+        document.getElementById('moveErr').innerText = '';
+        document.getElementById('moveSuccess').innerText = '';
+        if (!deviceId || !orgId) return;
+        try {
+          const url = `/api/admin/devices/${encodeURIComponent(deviceId)}/move`;
+          const res = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ org_id: parseInt(orgId, 10) })
+          });
+          if (res.status === 401 || res.status === 403) { window.location.href = '/login'; return; }
+          if (!res.ok) {
+            let data; try { data = await res.json(); } catch (_) { }
+            throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          document.getElementById('moveSuccess').innerText = 'Moved device ' + data.device_id + ' to org ' + data.org_id;
+          document.getElementById('moveDeviceId').value = '';
+        } catch (err) {
+          console.error('Move device failed', err);
+          document.getElementById('moveErr').innerText = 'Error: ' + String(err);
+        }
+      });
+
+      loadOrgs();
+    </script>
+  </body>
+</html>

@@ -16,6 +16,9 @@
           <div>
             Auto-refreshing every 10s
             <a class="btn btn-sm btn-outline-primary ms-2" href="/org">Organization</a>
+            {% if user and user.is_admin == 1 %}
+            <a class="btn btn-sm btn-outline-danger ms-2" href="/ui/admin/orgs">Admin</a>
+            {% endif %}
             <a class="btn btn-sm btn-outline-secondary ms-2" href="/login">Logout</a>
           </div>
         </div>
